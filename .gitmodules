@@ -1,0 +1,6 @@
+[submodule "submodules/RocoKingdom-Clicker"]
+	path = submodules/RocoKingdom-Clicker
+	url = https://github.com/DN20011219/RocoKingdom-Clicker.git
+[submodule "submodules/RocoKingdom-Spotting"]
+	path = submodules/RocoKingdom-Spotting
+	url = git@github.com:DN20011219/RocoKingdom-Spotting.git

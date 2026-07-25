@@ -1,0 +1,18 @@
+# Automatic-RocoKingdom 依赖
+# Python 3.10+
+
+# 核心依赖
+pyyaml>=6.0
+
+# 视觉识别（来自 RocoKingdom-Spotting）
+opencv-python>=4.8.0
+numpy>=1.24.0
+pywin32>=306
+Pillow>=10.0.0
+
+# 可选：YOLO 检测器
+# ultralytics>=8.0.0
+
+# 可选：GPU 加速（根据你的 CUDA 版本选择）
+# torch --index-url https://download.pytorch.org/whl/cu124
+# torchvision --index-url https://download.pytorch.org/whl/cu124

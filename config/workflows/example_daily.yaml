@@ -1,0 +1,110 @@
+# 每日任务自动化工作流示例
+# 演示框架的完整能力：感知 -> 动作 -> 条件 -> 循环
+
+name: "每日任务自动化"
+version: "1.0"
+description: "自动完成每日任务流程（示例）"
+
+# 全局变量
+variables:
+  max_retry: 3
+  timeout_sec: 300
+
+# 场景定义（可选）
+scenes:
+  main_menu:
+    detect:
+      target: "main_menu_label"
+      min_score: 0.85
+    on_enter: "step_navigate"
+  battle_field:
+    detect:
+      target: "battle_ui_label"
+      min_score: 0.80
+    on_enter: "step_battle"
+
+# 起始步骤（可选，默认使用第一个步骤）
+start: "step_start"
+
+# 工作流步骤
+steps:
+  step_start:
+    type: perceive
+    target: "main_menu_label"
+    min_score: 0.85
+    timeout_ms: 10000
+    on_found: "step_navigate"
+    on_timeout: "step_retry"
+
+  step_navigate:
+    type: action
+    actions:
+      - click_target: "daily_quest_button"
+        fallback_pos: [900, 500]
+        min_score: 0.8
+      - wait: 1000
+      - click: [1200, 700]
+    next: "step_battle"
+
+  step_battle:
+    type: loop
+    max_iterations: 10
+    body:
+      - type: perceive
+        target: "enemy_pet"
+        min_score: 0.7
+        timeout_ms: 5000
+        on_found: "step_attack"
+      - type: action
+        actions:
+          - key: 32
+          - wait: 1500
+    exit_condition:
+      type: visual
+      target: "victory_label"
+      min_score: 0.85
+    on_exit: "step_collect"
+    on_max_iterations: "step_collect"
+
+  step_attack:
+    type: action
+    actions:
+      - click_target: "skill_button_1"
+        fallback_pos: [400, 800]
+      - wait: 800
+      - click_target: "skill_button_2"
+        fallback_pos: [500, 800]
+      - wait: 2000
+    next: "step_battle"
+
+  step_collect:
+    type: action
+    actions:
+      - click_target: "reward_button"
+        fallback_pos: [960, 600]
+      - wait: 1000
+    next: "step_check_continue"
+
+  step_check_continue:
+    type: condition
+    conditions:
+      - type: counter
+        counter: "quest_done_count"
+        operator: ">="
+        value: 5
+    on_true: "step_end"
+    on_false: "step_start"
+
+  step_retry:
+    type: condition
+    conditions:
+      - type: counter
+        counter: "retry_count"
+        operator: "<"
+        value: "${max_retry}"
+    on_true: "step_start"
+    on_false: "step_end"
+
+  step_end:
+    type: terminate
+    message: "每日任务完成！"

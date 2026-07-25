@@ -1,0 +1,111 @@
+# PVP 对战自动化工作流示例
+# 演示循环战斗 + 视觉识别 + 条件退出
+
+name: "PVP 对战自动化"
+version: "1.0"
+description: "自动进行 PVP 对战，识别战斗状态并执行技能释放"
+
+# 全局变量
+variables:
+  max_battles: 20
+  skill_delay_ms: 600
+  turn_timeout_ms: 30000
+
+# 场景定义
+scenes:
+  lobby:
+    detect:
+      target: "pvp_lobby_label"
+      min_score: 0.85
+    on_enter: "step_find_match"
+  battle:
+    detect:
+      target: "battle_turn_indicator"
+      min_score: 0.80
+    on_enter: "step_battle_loop"
+  result:
+    detect:
+      target: "battle_result_label"
+      min_score: 0.85
+    on_enter: "step_handle_result"
+
+# 起始步骤
+start: "step_find_match"
+
+# 工作流步骤
+steps:
+  step_find_match:
+    type: action
+    actions:
+      - click_target: "pvp_match_button"
+        fallback_pos: [1400, 800]
+        min_score: 0.8
+      - wait: 3000
+    next: "step_wait_matchmaking"
+
+  step_wait_matchmaking:
+    type: perceive
+    target: "battle_turn_indicator"
+    min_score: 0.80
+    timeout_ms: 60000
+    on_found: "step_battle_loop"
+    on_timeout: "step_find_match"
+
+  step_battle_loop:
+    type: loop
+    max_iterations: 50
+    body:
+      - type: perceive
+        target: "my_turn_indicator"
+        min_score: 0.75
+        timeout_ms: 15000
+        on_found: "step_use_skill"
+      - type: action
+        actions:
+          - wait: 500
+    exit_condition:
+      type: visual
+      target: "battle_result_label"
+      min_score: 0.85
+    on_exit: "step_handle_result"
+    on_max_iterations: "step_handle_result"
+
+  step_use_skill:
+    type: action
+    actions:
+      - click_target: "skill_button_1"
+        fallback_pos: [300, 850]
+        min_score: 0.7
+      - wait: 600
+      - click_target: "skill_button_2"
+        fallback_pos: [450, 850]
+        min_score: 0.7
+      - wait: 600
+      - click_target: "skill_button_3"
+        fallback_pos: [600, 850]
+        min_score: 0.7
+      - wait: 2000
+    next: "step_battle_loop"
+
+  step_handle_result:
+    type: action
+    actions:
+      - wait: 2000
+      - click_target: "confirm_button"
+        fallback_pos: [960, 700]
+      - wait: 1500
+    next: "step_check_continue"
+
+  step_check_continue:
+    type: condition
+    conditions:
+      - type: counter
+        counter: "battle_count"
+        operator: ">="
+        value: "${max_battles}"
+    on_true: "step_end"
+    on_false: "step_find_match"
+
+  step_end:
+    type: terminate
+    message: "PVP 对战完成！"
