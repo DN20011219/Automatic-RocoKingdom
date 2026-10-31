@@ -110,6 +110,29 @@ python main.py -w config/workflows/example_battle.yaml -c config/global.yaml --l
 python -m unittest discover -s tests -v
 ```
 
+### 8. 构建发布包（解压即用）
+
+```bash
+# CPU 版 + CUDA 版都出
+python tools/build_release.py
+
+# 只出 CPU 版（约 650MB，任何 64 位 Windows 都能跑）
+python tools/build_release.py --variant lite
+
+# 只生成目录不压缩，调布局时用
+python tools/build_release.py --variant lite --no-zip
+```
+
+产物在 `dist/`：`RocoAutomation-lite-<日期>.zip`（CPU）与 `RocoAutomation-full-<日期>.zip`
+（CUDA cu128，约 5GB）。包内自带便携 Python、依赖、模型和模板，用户解压后：
+装一次 Interception 驱动（管理员 + 重启）→ 双击 `start-hunt.bat`。
+首次构建会下载 Python 嵌入式包和 torch（CUDA 版约 2.5GB），缓存在 `build/release/_cache`。
+
+> 模型 `best.pt` 被 gitignore，打包脚本直接从**工作区**拷贝当前模型；
+> 重新训练后不需要额外操作，重新打包即可。
+> `build_release.py` 不会打 PyInstaller 单文件：项目按 `Path(__file__)` 定位
+> `submodules/`，冻结后路径会失效，便携 Python 保持原目录结构零改动。
+
 ---
 
 ## 项目结构
@@ -193,7 +216,9 @@ Automatic-RocoKingdom/
 │   │                            #   --during-hold 测蓄力期间能否转视角
 │   │                            #   --use-detector 用检测框中心测（需画面里有精灵）
 │   ├── verify_model.py          # 校验模型类别名与标注/目录/data.yaml 是否对得上
-│   └── relabel_dataset.py       # 修复插入新类别后标注 id 未重编号（默认 dry-run）
+│   ├── relabel_dataset.py       # 修复插入新类别后标注 id 未重编号（默认 dry-run）
+│   ├── check_env.py             # 发布包自检：依赖、显卡、模型、工作流
+│   └── build_release.py         # 构建便携发布包（CPU / CUDA 两个 zip）
 │
 ├── requirements.txt
 └── .gitmodules

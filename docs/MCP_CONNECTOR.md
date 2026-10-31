@@ -350,6 +350,9 @@ mcp:
 
 先启动服务：`python -m mcp_server --transport http --port 8766`
 
+> 便携发布包里改用 `tools/launch_mcp.py`（对应 `start-mcp.bat`）：嵌入式 Python 的
+> `python310._pth` 是隔离模式，不会把当前目录加入 `sys.path`，`-m mcp_server` 会找不到模块。
+
 ```json
 {
   "mcpServers": {
