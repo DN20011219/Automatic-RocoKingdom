@@ -4,6 +4,10 @@
 # 核心依赖
 pyyaml>=6.0
 
+# MCP 连接器（mcp_server/，供大模型接入）
+# 注意：2.0 移除了 fastmcp 模块，须锁定 1.x
+mcp>=1.8,<2
+
 # 视觉识别（来自 RocoKingdom-Spotting）
 opencv-python>=4.8.0
 numpy>=1.24.0

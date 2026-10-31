@@ -1,0 +1,24 @@
+# 捕猎专用全局配置 —— 继承 config/global.yaml，只写和它不同的部分
+#
+# 用法：
+#   python main.py -w config/workflows/catch_pet.yaml -c config/global_hunt.yaml -v
+#
+# 为什么要单独一份：
+#   子模块 config.json 里除了 YOLO 还有一个 flat_labels 模板检测器。实测单帧耗时
+#   YOLO 只要 9.6ms（GPU），模板匹配却要 233.9ms —— 占了整帧 290ms 的 96%。
+#   捕猎工作流不用任何模板目标，白白多等 234ms，检测坐标严重滞后，瞄准自然打不准。
+#   关掉它之后单帧约 56ms（截图 46ms + YOLO 10ms），循环能到 ~18fps。
+#
+#   注意不要直接改 global.yaml 关掉模板检测器：enter_game.yaml 依赖
+#   enter_world / start_game 这两个模板目标，关了它就走不动了。
+
+extends: "global.yaml"
+
+# 检测本身就要 ~56ms，把循环间隔压到最低让帧率由检测速度决定
+loop_interval: 0.02
+
+spotting:
+  detectors:
+    # 按检测器名覆盖子模块 config.json 的同名条目，未提及的（yolo_pets）保持原样
+    flat_labels:
+      enabled: false

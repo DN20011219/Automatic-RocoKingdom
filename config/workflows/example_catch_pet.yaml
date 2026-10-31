@@ -1,0 +1,117 @@
+# 自动捉精灵工作流示例
+# 演示：野外场景识别 + 精灵检测 + PathPlanner 拟人移动 + 长按捕捉 + 无限循环
+
+name: "自动捉精灵"
+version: "1.0"
+description: "在野外场景中自动识别指定精灵，使用路径规划器拟人移动鼠标至精灵位置，长按左键捕捉，循环执行直到手动停止"
+
+# ─── 全局变量 ───────────────────────────────────────────────
+variables:
+  target_pet: "wild_pet"         # 要捕捉的精灵目标名（对应 Spotting 检测模板名）
+  pet_min_score: 0.55            # 精灵识别最低置信度
+  scene_label: "wild_scene_label" # 野外场景标识目标名
+  move_duration_ms: 350          # 鼠标移动耗时（模拟人类手臂运动）
+  press_hold_ms: 1200            # 长按持续时间（蓄力捕捉）
+  catch_cooldown_ms: 2000        # 每次捕捉后冷却时间
+  scan_timeout_ms: 8000          # 扫描精灵超时时间
+
+# ─── 场景定义 ───────────────────────────────────────────────
+scenes:
+  wild:
+    detect:
+      target: "${scene_label}"
+      min_score: 0.85
+    on_enter: "step_scan_pet"
+
+# ─── 起始步骤 ───────────────────────────────────────────────
+start: "step_check_scene"
+
+# ─── 工作流步骤 ─────────────────────────────────────────────
+steps:
+
+  # ═══ 阶段 1：确认野外场景 ═══
+  step_check_scene:
+    type: perceive
+    target: "${scene_label}"
+    min_score: 0.85
+    timeout_ms: 15000
+    on_found: "step_scene_ready"
+    on_timeout: "step_scene_not_found"
+
+  step_scene_ready:
+    type: log
+    message: "已识别野外场景，开始扫描精灵"
+    level: info
+    next: "step_scan_pet"
+
+  step_scene_not_found:
+    type: log
+    message: "未检测到野外场景，请确保游戏处于野外地图中"
+    level: warning
+    next: "step_check_scene"   # 重新等待
+
+  # ═══ 阶段 2：扫描并定位精灵 ═══
+  step_scan_pet:
+    type: perceive
+    target: "${target_pet}"
+    min_score: "${pet_min_score}"
+    timeout_ms: "${scan_timeout_ms}"
+    on_found: "step_pet_found"
+    on_timeout: "step_no_pet"
+
+  step_pet_found:
+    type: log
+    message: "发现目标精灵！准备移动鼠标"
+    level: info
+    next: "step_move_to_pet"
+
+  step_no_pet:
+    type: log
+    message: "未扫描到精灵，继续搜索..."
+    level: debug
+    next: "step_scan_pet"     # 继续扫描
+
+  # ═══ 阶段 3：PathPlanner 拟人移动鼠标至精灵 ═══
+  step_move_to_pet:
+    type: action
+    actions:
+      # 使用路径规划器将鼠标拟人移动到精灵位置
+      - move_to_target: "${target_pet}"
+        min_score: "${pet_min_score}"
+        duration_ms: "${move_duration_ms}"
+        strategy: "fitts"          # fitts 拟人策略（加减速 + 过冲 + 微抖动）
+        offset_x: 0
+        offset_y: 0
+      - wait: 100                  # 短暂稳定
+    next: "step_long_press"
+
+  # ═══ 阶段 4：长按左键捕捉 ═══
+  step_long_press:
+    type: action
+    actions:
+      # 在精灵位置长按左键（蓄力捕捉）
+      - click_target: "${target_pet}"
+        min_score: "${pet_min_score}"
+        hold_ms: "${press_hold_ms}"   # 长按 1200ms
+        offset_x: 0
+        offset_y: 0
+      - wait: "${catch_cooldown_ms}"  # 捕捉动画冷却
+    next: "step_after_catch"
+
+  # ═══ 阶段 5：捕捉后处理 ═══
+  step_after_catch:
+    type: log
+    message: "完成一次捕捉尝试"
+    level: info
+    next: "step_check_continue"
+
+  # ═══ 阶段 6：循环控制 ═══
+  # 检查是否仍在野外场景（如果精灵消失或场景变化则重新扫描）
+  step_check_continue:
+    type: condition
+    conditions:
+      - type: visual
+        target: "${scene_label}"
+        min_score: 0.80
+    on_true: "step_scan_pet"      # 仍在野外 → 继续扫描下一只
+    on_false: "step_check_scene"  # 场景丢失 → 重新等待野外场景

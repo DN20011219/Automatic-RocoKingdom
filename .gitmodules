@@ -4,3 +4,6 @@
 [submodule "submodules/RocoKingdom-Spotting"]
 	path = submodules/RocoKingdom-Spotting
 	url = git@github.com:DN20011219/RocoKingdom-Spotting.git
+[submodule "submodules/Roco-Kingdom-Protocol-Parser"]
+	path = submodules/Roco-Kingdom-Protocol-Parser
+	url = https://github.com/yuzeis/Roco-Kingdom-Protocol-Parser.git

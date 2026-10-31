@@ -9,9 +9,18 @@ spotting:
   window_keyword: "洛克王国：世界"
   capture_backend: "screen-client"   # screen-client | screen-window
   foreground_only: true
+  show_overlay: true                 # 在游戏窗口上叠加检测框（透明置顶、鼠标穿透、不抢前台）
+  overlay_show_cursor: true          # 额外画一个黄色 <cursor> 标记 = 当前光标位置
+  overlay_show_reference: true       # 黄色 <aim> 标记 = 客户区中心，球就是丢向这里的
   # config_path: "submodules/RocoKingdom-Spotting/config.json"  # 可选：指定 Spotting 配置
-  # detectors:  # 可选：直接在此定义检测器（覆盖 Spotting 的 config.json）
+  #
+  # detectors: 按检测器名覆盖子模块 config.json 的同名条目，未提及的保持原样。
+  # 典型用法是关掉用不上的检测器提速 —— 实测 flat_labels 模板匹配单帧要 234ms，
+  # 而 YOLO 只要 9.6ms。参见 config/global_hunt.yaml（捕猎工作流就用它关掉模板匹配）。
+  # detectors:
   #   flat_labels:
+  #     enabled: false
+  #   my_extra_detector:             # 也可以整条新增
   #     type: template
   #     enabled: true
   #     params:
@@ -24,10 +33,41 @@ spotting:
 clicker:
   move_mouse: true
 
+# RKPP 协议信息源配置（Roco-Kingdom-Protocol-Parser 子模块的 relay 接口）
+# 需先独立启动 RKPP 服务：
+#   python submodules/Roco-Kingdom-Protocol-Parser/rkpp_live_tools.py opencode-server --iface "以太网" --port 8195 --relay-port 8765
+protocol:
+  enabled: true                              # 关闭则完全不连接协议源
+  relay_url: "http://127.0.0.1:8765"       # RKPP relay 地址（--relay-port 保持一致）
+  history_size: 200                          # 本地保留的最近协议事件条数
+  reconnect_sec: 3.0                         # 断线/不可达时的重连间隔（秒）
+  read_timeout_sec: 30                       # 事件流读超时（超时后用 /health 探活）
+  log_events: false                          # 是否将每条协议事件输出到日志
+
 # 日志配置
 logging:
   level: "INFO"    # DEBUG | INFO | WARNING | ERROR
   file: null       # 可选：日志文件路径，如 "logs/automation.log"
+
+# MCP 连接器配置（mcp_server/，供大模型读取信息源与下发操作指令）
+# 启动：python -m mcp_server --transport http --port 8766
+# 详见：docs/MCP_CONNECTOR.md
+mcp:
+  enabled: true
+  server_name: "roco-kingdom"
+  transport: "http"              # stdio | http（streamable-http）
+  host: "127.0.0.1"              # 仅监听回环地址，不开放公网
+  port: 8766
+  host_engine: false             # true = 引擎托管模式（启用工作流控制类工具）
+  log_level: "INFO"
+  log_file: null                 # 建议 http 模式落盘，如 "logs/mcp.log"
+  safety:
+    allow_actions: true          # false = 只读服务，拒绝一切键鼠操作
+    max_sequence_len: 50         # execute_actions 单次动作序列长度上限
+  screenshot:
+    max_width: 1280              # 截图输出最大宽度（0 = 不缩放）
+    format: "png"                # png | jpeg
+    jpeg_quality: 80
 
 # 工作流默认配置
 workflow:

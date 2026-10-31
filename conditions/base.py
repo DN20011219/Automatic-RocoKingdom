@@ -73,3 +73,4 @@ class ConditionRegistry:
         import conditions.time_condition
         import conditions.counter_condition
         import conditions.composite_condition
+        import conditions.protocol_condition

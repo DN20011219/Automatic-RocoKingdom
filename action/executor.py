@@ -48,6 +48,11 @@ class ActionExecutor:
     def is_available(self) -> bool:
         return self._initialized and self._adapter is not None
 
+    @property
+    def adapter(self):
+        """底层 ClickerAdapter（只读访问，供外部直接键鼠操作）。"""
+        return self._adapter
+
     def execute_actions(
         self,
         actions: List[Dict[str, Any]],
@@ -72,6 +77,9 @@ class ActionExecutor:
         for action in actions:
             if stop_event and stop_event.is_set():
                 return False
+
+            # 解析动作中的 ${var} 变量引用
+            action = self._resolve_action(action, context)
 
             # 动作级重试（spec 9.2）
             max_retries = action.get("retry", 0) if isinstance(action, dict) else 0
@@ -110,6 +118,10 @@ class ActionExecutor:
         # 高级动作：click_target
         if "click_target" in action:
             return self._execute_click_target(action, context)
+
+        # 高级动作：move_to_target（PathPlanner 拟人移动）
+        if "move_to_target" in action:
+            return self._execute_move_to_target(action, context)
 
         # 高级动作：click 简写格式 [x, y]
         if "click" in action and isinstance(action["click"], (list, tuple)):
@@ -166,8 +178,51 @@ class ActionExecutor:
             logger.warning("click_target: 目标 %s 未找到且无备选坐标", target_name)
             return False
 
+    def _execute_move_to_target(
+        self,
+        action: Dict[str, Any],
+        context: RuntimeContext,
+    ) -> bool:
+        """执行 move_to_target 动作：使用 PathPlanner 拟人移动鼠标到视觉目标。"""
+        target_name = action["move_to_target"]
+        min_score = action.get("min_score", 0.0)
+        fallback_pos = action.get("fallback_pos", None)
+        duration_ms = action.get("duration_ms", 300)
+        strategy = action.get("strategy", "fitts")
+        offset_x = action.get("offset_x", 0)
+        offset_y = action.get("offset_y", 0)
+
+        # 从上下文中查找目标
+        detection = context.find_detection(target_name, min_score)
+
+        if detection:
+            x = detection.cx + offset_x
+            y = detection.cy + offset_y
+            logger.debug("move_to_target: %s -> (%d, %d) score=%.2f strategy=%s",
+                         target_name, x, y, detection.score, strategy)
+            return self._adapter.move_to_planned(x, y, duration_ms, strategy)
+        elif fallback_pos:
+            x, y = fallback_pos
+            logger.debug("move_to_target: %s 未找到，使用备选坐标 (%d, %d)",
+                         target_name, x, y)
+            return self._adapter.move_to_planned(x, y, duration_ms, strategy)
+        else:
+            logger.warning("move_to_target: 目标 %s 未找到且无备选坐标", target_name)
+            return False
+
     def cleanup(self) -> None:
         """清理资源。"""
         if self._adapter:
             self._adapter.cleanup()
         self._initialized = False
+
+    def _resolve_action(self, value: Any, context: RuntimeContext) -> Any:
+        """递归解析动作配置中的 ${var} 变量引用。"""
+        if isinstance(value, dict):
+            return {
+                key: self._resolve_action(item, context)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._resolve_action(item, context) for item in value]
+        return context.resolve_value(value)

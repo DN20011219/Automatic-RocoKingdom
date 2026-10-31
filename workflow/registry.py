@@ -52,3 +52,4 @@ class NodeRegistry:
         import workflow.nodes.scene_node
         import workflow.nodes.terminate_node
         import workflow.nodes.log_node
+        import workflow.nodes.pet_hunt_node

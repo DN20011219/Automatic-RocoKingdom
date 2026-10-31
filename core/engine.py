@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from core.context import RuntimeContext
 from core.events import (
@@ -46,6 +46,7 @@ class Engine:
 
         # 子系统（延迟初始化）
         self._perception = None  # perception.adapter.SpottingAdapter
+        self._protocol_source = None  # perception.protocol_source.ProtocolSource
         self._action_executor = None  # action.executor.ActionExecutor
         self._workflow_executor = None  # workflow.executor.WorkflowExecutor
         self._scene_machine = None  # scene.state_machine.SceneStateMachine
@@ -74,10 +75,19 @@ class Engine:
         self._perception = SpottingAdapter(spotting_config)
         self._perception.setup()
 
+        # 初始化协议信息源（可选，依赖 RKPP opencode-server）
+        from perception.protocol_source import ProtocolSource
+        protocol_config = self._config.get("protocol", {})
+        self._protocol_source = ProtocolSource(
+            protocol_config, self.context, self.event_bus
+        )
+        self._protocol_source.setup()
+
         # 初始化动作层
         from action.executor import ActionExecutor
         clicker_config = self._config.get("clicker", {})
         self._action_executor = ActionExecutor(clicker_config, self.event_bus)
+        self._action_executor.setup()
 
         # 初始化场景状态机
         from scene.state_machine import SceneStateMachine
@@ -85,7 +95,8 @@ class Engine:
 
         logger.info("引擎初始化完成")
 
-    def load_workflow(self, workflow_path: str) -> None:
+    def load_workflow(self, workflow_path: str,
+                      variable_overrides: Optional[Dict[str, Any]] = None) -> None:
         """加载工作流文件。"""
         from workflow.loader import WorkflowLoader
         from workflow.executor import WorkflowExecutor
@@ -104,8 +115,21 @@ class Engine:
         )
 
         # 设置工作流变量
-        self.context.variables.update(workflow_def.get("variables", {}))
+        declared = workflow_def.get("variables", {}) or {}
+        self.context.variables.update(declared)
         self.context.workflow_name = workflow_def.get("name", "unnamed")
+
+        # 命令行覆盖优先于 YAML（换目标精灵时不必改文件）
+        if variable_overrides:
+            unknown = [k for k in variable_overrides if k not in declared]
+            if unknown:
+                logger.warning(
+                    "以下 --var 变量在工作流的 variables 里没有声明，可能拼写错了: %s",
+                    ", ".join(sorted(unknown)),
+                )
+            self.context.variables.update(variable_overrides)
+            logger.info("命令行覆盖变量: %s",
+                        ", ".join(f"{k}={v!r}" for k, v in sorted(variable_overrides.items())))
 
         # 加载场景定义
         if "scenes" in workflow_def:
@@ -180,6 +204,11 @@ class Engine:
 
         detections = self._perception.detect_frame()
         self.context.last_detections = detections
+        self.context.frame_seq += 1
+        # 区分"画面里没有目标"和"根本没截到画面"，避免节点在看不见时盲动键鼠
+        self.context.frame_captured = getattr(self._perception, "last_capture_ok", True)
+        # 丢球瞄准的基准点（客户区中心）需要截帧区域
+        self.context.frame_rect = getattr(self._perception, "last_rect", (0, 0, 0, 0))
 
         self.event_bus.emit(
             EVENT_FRAME_PROCESSED,
@@ -215,6 +244,28 @@ class Engine:
     def state(self) -> EngineState:
         return self.lifecycle.state
 
+    # ---- 子系统只读访问器（供 MCP 等外部接入层使用） ----
+
+    @property
+    def perception(self):
+        """视觉感知适配器（SpottingAdapter）。"""
+        return self._perception
+
+    @property
+    def protocol_source(self):
+        """协议信息源（ProtocolSource）。"""
+        return self._protocol_source
+
+    @property
+    def action_executor(self):
+        """工作流动作执行器（ActionExecutor）。"""
+        return self._action_executor
+
+    @property
+    def workflow_executor(self):
+        """工作流执行器（WorkflowExecutor，未加载工作流时为 None）。"""
+        return self._workflow_executor
+
     # ------------------------------------------------------------------
     # 内部方法
     # ------------------------------------------------------------------
@@ -226,5 +277,11 @@ class Engine:
 
         if self._perception:
             self._perception.cleanup()
+
+        if self._protocol_source:
+            self._protocol_source.cleanup()
+
+        if self._action_executor:
+            self._action_executor.cleanup()
 
         logger.info("引擎已关闭")

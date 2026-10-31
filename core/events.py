@@ -25,6 +25,11 @@ EVENT_PAUSED = "on_paused"
 EVENT_RESUMED = "on_resumed"
 EVENT_STOPPED = "on_stopped"
 
+# 协议信息源（RKPP）事件
+EVENT_PROTOCOL_EVENT = "on_protocol_event"
+EVENT_PROTOCOL_CONNECTED = "on_protocol_connected"
+EVENT_PROTOCOL_DISCONNECTED = "on_protocol_disconnected"
+
 
 class EventBus:
     """简单同步事件总线。
@@ -50,16 +55,16 @@ class EventBus:
                 h for h in self._handlers[event] if h is not handler
             ]
 
-    def emit(self, event: str, **kwargs: Any) -> None:
+    def emit(self, event_name: str, **kwargs: Any) -> None:
         """触发事件，按注册顺序调用所有监听器。"""
-        handlers = self._handlers.get(event, [])
+        handlers = self._handlers.get(event_name, [])
         for handler in handlers:
             try:
                 handler(**kwargs)
             except Exception as e:
                 logger.error(
                     "事件处理器异常: event=%s, handler=%s, error=%s",
-                    event, handler.__name__, e,
+                    event_name, handler.__name__, e,
                 )
 
     def clear(self) -> None:

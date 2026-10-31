@@ -25,17 +25,20 @@
            │                  │                   │
 ┌──────────▼──────┐  ┌───────▼────────┐  ┌──────▼──────────┐
 │  perception/    │  │  workflow/     │  │   action/       │
-│  (感知层)       │  │  (工作流引擎)  │  │   (动作层)      │
+│  (感知层)       │  │  (工作流引擎)  │  │  (动作层)      │
 │                 │  │  conditions/   │  │                 │
 │  SpottingAdapter│  │  scene/        │  │  ClickerAdapter │
-│  SceneDetector  │  │                │  │  ActionExecutor │
+│  ProtocolSource │  │                │  │  ActionExecutor │
+│  SceneDetector  │  │                │  │                 │
 │  TargetTracker  │  │                │  │                 │
 └─────────────────┘  └────────────────┘  └─────────────────┘
            │                  │                   │
 ┌──────────▼──────────────────▼───────────────────▼───────────────┐
 │                    submodules/ (Git 子模块)                       │
-│         RocoKingdom-Spotting          RocoKingdom-Clicker        │
-│         (视觉检测引擎)                (键鼠控制引擎)             │
+│    RocoKingdom-Spotting   RocoKingdom-Clicker                    │
+│    (视觉检测引擎)         (键鼠控制引擎)                        │
+│    Roco-Kingdom-Protocol-Parser                                  │
+│    (协议解析器，通过本地 HTTP relay 提供协议信息源)               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -247,6 +250,32 @@ adapter.cleanup()                            # 释放资源
 - **持续** (tracking)：目标持续存在
 - **消失** (lost)：目标从画面中消失
 
+### 3.4 ProtocolSource — 协议信息源（RKPP）
+
+`perception/protocol_source.py` 是视觉之外的第二信息源：连接 Roco-Kingdom-Protocol-Parser
+子模块的本地 HTTP relay（`opencode-server` 模式），后台线程订阅 `/events` NDJSON 实时流。
+
+```python
+source = ProtocolSource(config, context, event_bus)
+source.setup()      # 启动后台订阅线程（断线自动重连）
+source.stats()      # 运行状态（连接状态、累计事件数）
+source.cleanup()    # 停止线程并断开连接
+```
+
+**数据流向：**
+- 每条事件按 `summary_kind` / `opcode_name` / `opencode` 三个维度写入 `context.last_protocol_events`
+- 触发 `EVENT_PROTOCOL_EVENT`（每条事件）/ `EVENT_PROTOCOL_CONNECTED` / `EVENT_PROTOCOL_DISCONNECTED`
+- 工作流通过 `protocol` 条件类型消费（见条件系统）
+
+**使用前提：** 需独立启动 RKPP 服务（需要 Npcap 与会话 key）：
+
+```powershell
+python submodules/Roco-Kingdom-Protocol-Parser/rkpp_live_tools.py opencode-server --iface "以太网" --port 8195 --relay-port 8765
+```
+
+**设计约束：** 本模块只读消费协议事件，不向游戏发送任何数据；协议源不可用时静默重试，
+工作流不应硬依赖协议数据（可与视觉条件用 `OR` 组合做回退）。
+
 ---
 
 ## 4. 动作层 (`action/`)
@@ -389,6 +418,7 @@ class ConditionRegistry:
 | `variable` | `variable`, `operator`, `value` | 变量比较 |
 | `composite` | `operator`(AND/OR/NOT), `conditions[]` | 组合条件 |
 | `scene` | `scene` | 当前场景匹配 |
+| `protocol` | `event`, `within_sec`, `field`, `operator`, `value` | RKPP 协议事件已发生（可附加字段比较） |
 
 **支持的运算符：** `==`, `!=`, `>`, `>=`, `<`, `<=`
 

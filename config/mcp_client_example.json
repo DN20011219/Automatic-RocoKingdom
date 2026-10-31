@@ -1,0 +1,15 @@
+{
+  "_comment": "Automatic-RocoKingdom MCP 连接器客户端接入示例（二选一）",
+  "mcpServers": {
+    "roco-kingdom-http": {
+      "_comment": "streamable-http 模式：先运行 'python -m mcp_server --transport http --port 8766'",
+      "url": "http://127.0.0.1:8766/mcp"
+    },
+    "roco-kingdom-stdio": {
+      "_comment": "stdio 模式：由 MCP 客户端直接拉起进程，无需预先启动",
+      "command": "python",
+      "args": ["-m", "mcp_server", "--transport", "stdio", "--config", "config/global.yaml"],
+      "cwd": "c:\\Users\\17676\\Desktop\\开发中\\Automatic-RocoKingdom"
+    }
+  }
+}

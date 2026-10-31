@@ -19,10 +19,52 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def coerce_var_value(raw: str):
+    """把 --var 的值转成合适的 Python 类型。
+
+    YAML 变量是有类型的（数值参与算术、布尔参与判断），而命令行只能给字符串，
+    所以这里做最小推断：true/false → bool，整数 → int，小数 → float，其余保持字符串。
+    """
+    lowered = raw.lower()
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    if lowered in ("none", "null"):
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    return raw
+
+
+def parse_var_overrides(pairs) -> dict:
+    """解析若干个 --var KEY=VALUE 成字典。"""
+    overrides = {}
+    for pair in pairs or []:
+        if "=" not in pair:
+            raise ValueError(f"--var 需要 KEY=VALUE 格式，收到: {pair!r}")
+        key, raw = pair.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"--var 的变量名为空: {pair!r}")
+        overrides[key] = coerce_var_value(raw.strip())
+    return overrides
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Automatic-RocoKingdom 全自动化脚本框架",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "覆盖工作流变量（可重复），例如换个要抓的精灵而不必改 YAML：\n"
+            "  python main.py -w config/workflows/catch_pet.yaml "
+            "-c config/global_hunt.yaml --var target_pet=sansan\n"
+            "  ... --var target_pet=sansan --var throw_hold_ms=250 --var max_catches=3"
+        ),
     )
     parser.add_argument(
         "--workflow", "-w",
@@ -46,6 +88,14 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="日志输出文件路径",
+    )
+    parser.add_argument(
+        "--var",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help="覆盖工作流 variables 里的变量，可重复使用。"
+             "例如 --var target_pet=pipaniao 换要抓的精灵，不必改 YAML",
     )
     return parser.parse_args()
 
@@ -97,7 +147,12 @@ def main() -> int:
             return 1
 
         logger.info("正在加载工作流: %s", workflow_path)
-        engine.load_workflow(str(workflow_path))
+        try:
+            overrides = parse_var_overrides(args.var)
+        except ValueError as e:
+            logger.error("%s", e)
+            return 1
+        engine.load_workflow(str(workflow_path), variable_overrides=overrides)
 
         # 运行
         logger.info("开始执行... (Ctrl+C 停止)")

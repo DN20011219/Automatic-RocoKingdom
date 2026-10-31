@@ -1,0 +1,245 @@
+# PVE 野生宠物自动战斗工作流示例
+# 演示：回合制战斗 + 多技能策略 + 宠物切换 + 胜负处理 + 循环刷怪
+
+name: "PVE 自动战斗"
+version: "1.0"
+description: "自动进行 PVE 野生宠物战斗，支持多技能策略、宠物切换、胜负判定与循环刷怪"
+
+# ─── 全局变量 ───────────────────────────────────────────────
+variables:
+  max_battles: 10          # 最大战斗次数
+  skill_delay_ms: 800      # 技能释放间隔
+  turn_timeout_ms: 20000   # 单回合超时
+  heal_threshold: 2        # 低于此回合数时考虑切换宠物
+
+# ─── 场景定义 ───────────────────────────────────────────────
+scenes:
+  world_map:
+    detect:
+      target: "world_map_label"
+      min_score: 0.85
+    on_enter: "step_find_wild"
+
+  battle_field:
+    detect:
+      target: "battle_turn_indicator"
+      min_score: 0.80
+    on_enter: "step_battle_loop"
+
+  battle_result:
+    detect:
+      target: "battle_result_label"
+      min_score: 0.85
+    on_enter: "step_handle_result"
+
+# ─── 起始步骤 ───────────────────────────────────────────────
+start: "step_find_wild"
+
+# ─── 工作流步骤 ─────────────────────────────────────────────
+steps:
+
+  # ═══ 阶段 1：寻找野生宠物 ═══
+  step_find_wild:
+    type: log
+    message: "开始寻找野生宠物..."
+    level: info
+    next: "step_click_grass"
+
+  step_click_grass:
+    type: action
+    actions:
+      # 点击草丛区域触发野生宠物遭遇
+      - click_target: "wild_grass_area"
+        fallback_pos: [800, 500]
+        min_score: 0.7
+        retry: 3
+        retry_delay_ms: 1000
+      - wait: 2000
+    next: "step_wait_battle_start"
+
+  # 等待战斗界面出现
+  step_wait_battle_start:
+    type: perceive
+    target: "battle_turn_indicator"
+    min_score: 0.80
+    timeout_ms: 10000
+    on_found: "step_battle_start_log"
+    on_timeout: "step_click_grass"   # 没遇到就继续刷草丛
+
+  step_battle_start_log:
+    type: log
+    message: "遭遇野生宠物！战斗开始"
+    level: info
+    next: "step_battle_loop"
+
+  # ═══ 阶段 2：回合制战斗循环 ═══
+  step_battle_loop:
+    type: loop
+    max_iterations: 30
+    body:
+      # 等待我方回合指示器出现
+      - type: perceive
+        target: "my_turn_indicator"
+        min_score: 0.75
+        timeout_ms: "${turn_timeout_ms}"
+        on_found: "step_choose_action"
+      # 非我方回合，短暂等待
+      - type: action
+        actions:
+          - wait: 500
+    exit_condition:
+      type: visual
+      target: "battle_result_label"
+      min_score: 0.85
+    on_exit: "step_handle_result"
+    on_max_iterations: "step_handle_timeout"
+
+  # ═══ 阶段 3：行动选择（策略分支） ═══
+  step_choose_action:
+    type: condition
+    logic: "OR"
+    conditions:
+      # 如果检测到"宠物血量低"指示器，则切换宠物
+      - type: visual
+        target: "low_hp_warning"
+        min_score: 0.75
+    on_true: "step_switch_pet"
+    on_false: "step_use_skills"
+
+  # ═══ 阶段 4：释放技能组合 ═══
+  step_use_skills:
+    type: action
+    actions:
+      # 技能 1：主力输出技能
+      - click_target: "skill_button_1"
+        fallback_pos: [350, 850]
+        min_score: 0.7
+        retry: 2
+        retry_delay_ms: 300
+      - wait: "${skill_delay_ms}"
+
+      # 技能 2：副技能 / BUFF
+      - click_target: "skill_button_2"
+        fallback_pos: [500, 850]
+        min_score: 0.7
+      - wait: "${skill_delay_ms}"
+
+      # 技能 3：补刀 / 控制技能
+      - click_target: "skill_button_3"
+        fallback_pos: [650, 850]
+        min_score: 0.7
+      - wait: "${skill_delay_ms}"
+
+      # 技能 4：终结技（如果可用）
+      - click_target: "skill_button_4"
+        fallback_pos: [800, 850]
+        min_score: 0.7
+      - wait: 2000    # 等待技能动画播放完毕
+    next: "step_battle_loop"
+
+  # ═══ 阶段 5：切换宠物 ═══
+  step_switch_pet:
+    type: log
+    message: "当前宠物血量过低，切换后备宠物"
+    level: warning
+    next: "step_do_switch"
+
+  step_do_switch:
+    type: action
+    actions:
+      # 点击"切换宠物"按钮
+      - click_target: "switch_pet_button"
+        fallback_pos: [1500, 900]
+        min_score: 0.75
+      - wait: 1000
+      # 选择第二只宠物
+      - click_target: "pet_slot_2"
+        fallback_pos: [600, 400]
+        min_score: 0.7
+      - wait: 1500
+    next: "step_battle_loop"
+
+  # ═══ 阶段 6：战斗结果处理 ═══
+  step_handle_result:
+    type: condition
+    logic: "OR"
+    conditions:
+      # 检测是否胜利
+      - type: visual
+        target: "victory_label"
+        min_score: 0.85
+    on_true: "step_on_victory"
+    on_false: "step_on_defeat"
+
+  step_on_victory:
+    type: log
+    message: "战斗胜利！领取奖励"
+    level: info
+    next: "step_collect_reward"
+
+  step_collect_reward:
+    type: action
+    actions:
+      - wait: 1500
+      # 点击确认 / 领取奖励
+      - click_target: "confirm_button"
+        fallback_pos: [960, 700]
+        min_score: 0.8
+      - wait: 1000
+      # 如果有额外奖励弹窗，点掉
+      - click_target: "reward_close_button"
+        fallback_pos: [1100, 200]
+        min_score: 0.6
+      - wait: 1000
+    next: "step_check_continue"
+
+  step_on_defeat:
+    type: log
+    message: "战斗失败，尝试复活"
+    level: warning
+    next: "step_revive"
+
+  step_revive:
+    type: action
+    actions:
+      - wait: 1000
+      # 点击复活 / 返回按钮
+      - click_target: "revive_button"
+        fallback_pos: [960, 650]
+        min_score: 0.7
+      - wait: 2000
+    next: "step_check_continue"
+
+  # ═══ 阶段 7：超时保护 ═══
+  step_handle_timeout:
+    type: log
+    message: "战斗回合数超限，强制退出"
+    level: error
+    next: "step_force_exit"
+
+  step_force_exit:
+    type: action
+    actions:
+      # 按 ESC 退出战斗
+      - key: 27
+      - wait: 1000
+      - click_target: "confirm_button"
+        fallback_pos: [960, 700]
+      - wait: 1500
+    next: "step_check_continue"
+
+  # ═══ 阶段 8：循环控制 ═══
+  step_check_continue:
+    type: condition
+    conditions:
+      - type: counter
+        counter: "battle_count"
+        operator: ">="
+        value: "${max_battles}"
+    on_true: "step_end"
+    on_false: "step_find_wild"
+
+  # ═══ 结束 ═══
+  step_end:
+    type: terminate
+    message: "PVE 自动战斗完成！共进行了 ${max_battles} 场战斗"

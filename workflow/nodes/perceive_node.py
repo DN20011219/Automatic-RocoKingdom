@@ -43,10 +43,20 @@ class PerceiveNode(NodeBase):
 
     def execute(self, context: Any) -> tuple[NodeResult, Optional[str]]:
         """检查目标是否满足条件。"""
-        target = self._config.get("target", "")
-        min_score = self._config.get("min_score", 0.0)
+        target = context.resolve_value(self._config.get("target", ""))
+        min_score = context.resolve_value(self._config.get("min_score", 0.0))
         mode = self._config.get("mode", "found")  # found | absent
-        timeout_ms = self._config.get("timeout_ms", 0)
+        timeout_ms = context.resolve_value(self._config.get("timeout_ms", 0))
+
+        # 变量解析后的类型兜底
+        try:
+            min_score = float(min_score)
+        except (TypeError, ValueError):
+            min_score = 0.0
+        try:
+            timeout_ms = int(timeout_ms)
+        except (TypeError, ValueError):
+            timeout_ms = 0
 
         if not target:
             logger.warning("感知节点 %s 没有定义 target", self._step_name)

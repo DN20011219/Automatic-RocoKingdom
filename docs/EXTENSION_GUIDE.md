@@ -316,7 +316,41 @@ class ClickerAdapter:
     def execute_action(self, action_dict: dict) -> bool: ...
     def execute_sequence(self, actions: list) -> bool: ...
     def cleanup(self) -> None: ...
+
+    # 3D 游戏（mouse-look）专用原语
+    def move_to_planned(self, x, y, duration_ms=300, strategy="fitts", num_steps=20) -> bool:
+        """PathPlanner 拟人路径，绝对定位到 (x, y)。"""
+    def move_relative(self, dx, dy, duration_ms=200, steps=0) -> bool:
+        """相对位移 —— 游戏解释为转视角；拆成多小步实现慢速平滑转动。"""
+    def hold_left(self, hold_ms=1200) -> bool:
+        """在当前位置长按左键（按下→保持→松开），全程不移动鼠标。"""
+    @staticmethod
+    def cursor_pos() -> tuple[int, int]:
+        """当前光标屏幕坐标 —— 纯相对位移瞄准靠它算「光标 → 目标」的差量。"""
 ```
+
+**相对位移瞄准**：`cursor_pos()` + `move_relative()` 组合起来就能在不产生任何
+绝对定位事件的前提下把光标送到目标上（见 `pet_hunt` 节点的 `aim_strategy: relative`）。
+游戏鼠标灵敏度不等于 1 时会欠冲/过冲，需要配合"检测 → 重瞄"的闭环收敛。
+注意游戏若隐藏或锁定光标，`GetCursorPos` 可能不更新，此时应改用绝对定位。
+
+`move_relative` / `hold_left` 优先走 Interception 驱动；驱动不可用时自动回退到
+SendInput（相对移动不带 `MOUSEEVENTF_ABSOLUTE` 标志），因此未装驱动也能跑，
+只是相对位移精度略低。
+
+### Spotting Adapter：区分"看不到"和"没有目标"
+
+`detect_frame()` 返回空列表有两种含义，动作层必须区别对待：
+
+```python
+adapter.detect_frame()          # -> []
+adapter.last_capture_ok         # False = 窗口未找到/不在前台/截图失败
+                                # True  = 画面正常，确实没有目标
+```
+
+引擎每个 tick 会把这个标志写进 `RuntimeContext.frame_captured`。
+自定义节点在"检测不到目标就动鼠标/按键"之前应当先检查它，
+否则游戏窗口失焦时脚本会一直操作你正在使用的真实桌面。
 
 ---
 

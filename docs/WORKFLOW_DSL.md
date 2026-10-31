@@ -304,6 +304,185 @@ step_debug:
 
 ---
 
+### 3.9 pet_hunt — 捕猎循环（识别 → 瞄准 → 丢球 → 补回轴线 → 单向扫视）
+
+把「视觉识别精灵 → 移动鼠标瞄准 → 长按左键蓄力丢球 → 补回视角轴线 → 一直朝同一方向
+慢速转视角找下一只」整条闭环封装在**一个节点内部**。节点自维持状态机，每个 PDA tick
+推进一小步并返回 `RUNNING`，因此无需在 YAML 里用 `loop` + `perceive` + `action`
+拼流程，也不会有跨节点的坐标过期问题。
+
+内部状态流转：
+
+```
+scan ──发现目标(连续 N 帧确认)──> aim ──> settle ──> throw ──> cooldown ──┐
+  ^                                                          (补回轴线)   │
+  └──────────────────────────────────────────────────────────────────────┘
+  │
+  └──未发现目标──> 慢速转视角一小步（默认一直朝同一方向，360° 自己转回来）
+```
+
+**目标识别**
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `type` | string | — | 固定为 `"pet_hunt"` |
+| `target` | string | `"sansan"` | 要捕捉的 YOLO 类别名 |
+| `min_score` | float | `0.5` | 最低置信度（子模块 `config.json` 里 YOLO 的 `conf` 是硬下限） |
+| `confirm_frames` | int | `2` | 连续命中几帧才开火，防止单帧误检白丢球 |
+| `target_select` | string | `"reference"` | 多目标时怎么选：`reference` = 离瞄准基准点最近；`score` = 置信度最高；`largest` = 检测框面积最大（近似离角色最近） |
+
+**关于 `target_select`：**
+
+默认 `reference` 有两个好处：转视角代价最小（最快能丢出球），而且增益标定时
+挑的是**离上次瞄准点最近的那只**，所以观测的始终是刚才在瞄的同一只精灵，
+不会被旁边的高分目标带偏。截帧区域未知、基准点算不出来时自动退回 `score`。
+
+**瞄准**
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `aim_strategy` | string | `"relative"` | `relative` = 纯相对位移转视角（默认）；`planned` = PathPlanner 拟人绝对定位；`direct` = 直接绝对定位 |
+| `aim_reference` | string | `"center"` | 瞄准基准点：`center` = 客户区中心；`cursor` = 鼠标光标（仅当游戏真用光标瞄准时） |
+| `aim_reference_offset_x` | float | `0` | 基准点微调（实测落点偏左就把 x 调正） |
+| `aim_reference_offset_y` | float | `0` | 基准点微调（实测落点偏上就把 y 调正） |
+| `aim_gain_x` | float | `-1.0` | 水平比率 = 画面内容位移 ÷ 鼠标位移，**带符号**；由 `tools/calibrate_aim.py` 离线实测后填入 |
+| `aim_gain_y` | float | `-1.0` | 垂直比率，同上。两轴符号/量级可能差很多，必须分开存 |
+| `aim_max_move_px` | float | `3000` | 单事件位移上限，只在比率配错（接近 0）时兜底 |
+| `aim_path_planner` | bool | `false` | `true` = 用 PathPlanner 生成拟人轨迹（加减速+弧线+过冲）执行这段位移 |
+| `aim_path_steps` | int | `20` | 仅 `aim_path_planner` 生效：轨迹分段数，越多越平滑 |
+| `path_strategy` | string | `"fitts"` | 扰动策略：`fitts` / `sine`（`aim_path_planner` 与 `planned` 都用它） |
+| `aim_duration_ms` | int | `350` | 移动耗时：拟人轨迹下是走完整条轨迹的总时长；`planned`/`direct` 是绝对定位耗时 |
+| `aim_settle_ms` | int | `120` | 位移后等**相机到位**再丢球；设为 `0` 则同一 tick 内直接丢 |
+| `aim_offset_x` | int | `0` | 目标点 X 偏移（正值向右） |
+| `aim_offset_y` | int | `0` | 目标点 Y 偏移（正值向下；球总丢到头顶时可调正） |
+
+**关于 `aim_strategy`：**
+
+- **`relative`（默认，推荐）** —— 只发**相对位移**转视角，把目标转到**瞄准基准点**上，
+  全程不产生绝对定位事件。鼠标位移 = `−(目标 − 基准点) / 比率`，**一次发完**。
+  基准点默认是**客户区中心**：很多游戏（含洛克王国：世界）的投掷是丢向镜头正前方的，
+  画面里既没有准星也没有光标，中心是唯一确定已知的瞄准参考。
+  比率定义为「画面内容位移 ÷ 鼠标位移」，**带符号、按轴分开**：实测本游戏
+  （1920x1080）水平轴约 −1.15（量级接近 1，标准 mouse-look 符号），垂直轴只有
+  约 −0.22（鼠标要走误差的 4.5 倍）。两轴差 5 倍，单一比率必然有一轴对不准 ——
+  这正是"准星对不到目标上"的根因。
+  比率由 `tools/calibrate_aim.py` **离线实测**后填进配置，运行时不改。
+- **`planned`** —— PathPlanner 生成拟人路径后绝对定位。轨迹更像人，
+  但一次绝对跳变本身可能把视角带偏。
+- **`direct`** —— 单事件绝对定位，最快也最"机械"。
+
+**一次到位，不复核、不迭代。**
+
+流程就是：检测到目标 → 按比率算出位移 → 单事件发出 → 等相机到位（`aim_settle_ms`）
+→ 长按丢球。中间**不看第二帧**。
+
+曾经做过"移动后再检测一次、按观测到的实际位移修正比率、再补一步"的闭环，实测更差：
+等一帧要付出 停稳 120ms + 截图 55ms + 推理 10ms，这段时间精灵已经走远，
+复核瞄的是它**刚才**的位置，越复核越偏。精度改由离线实测的比率保证。
+
+`aim_settle_ms` 等的是**相机**（平滑插值需要时间，不等就会按半截视角的方向把球丢出去），
+不是重新检测 —— 这两件事必须分清。
+
+**位移的发送方式必须和标定时一致。**
+
+`aim_path_planner: false`（默认）是**单事件**发送；`true` 则用 PathPlanner 生成
+带加减速/弧线/过冲的拟人轨迹，拆成 `aim_path_steps` 个相对位移微步执行。
+PathPlanner 保证各步之和**精确等于**目标位移（最后一步做校正），所以净位移一样，
+差别只在轨迹形状和时间分布。
+
+但游戏对"N 个微步"和"1 个大步"的响应**不一定等价** —— 这是踩过的坑：
+标定工具用单事件测出比率，节点却拆成 35 个微步执行，测的和跑的不是一件事，
+比率直接失效。所以：
+
+- 切换 `aim_path_planner` 之后**必须重新标定**比率；
+- `tools/calibrate_aim.py` 默认会**读工作流 YAML**（`--workflow`）里的
+  `aim_path_planner` / `aim_path_steps` / `aim_duration_ms` / `path_strategy`，
+  用与节点完全相同的方式发位移，从结构上杜绝这种不一致。工具启动时会打印它读到的发法。
+
+扫视（pan）始终是单事件，"慢速"靠 `pan_dx` 小步长 + `pan_interval_ms` 间隔实现。
+默认 `sweep_limit_px: 0` —— 一直朝同一方向转，转满 360° 自然回到原处，
+不需要为了"看全一圈"来回扫。
+
+**丢球**
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `throw_hold_ms` | int | `300` | 长按左键蓄力时长（参考实现用 200~400ms；过长会过充导致球飞过头） |
+| `catch_cooldown_ms` | int | `2000` | 丢球后冷却，等捕捉动画播完 |
+| `restore_aim_after_throw` | bool | `true` | 冷却结束时把瞄准的相对位移**反向补回**：光标回原位、相机回原轴线（不补则每抓一只相机多偏一点，扫视线越来越斜） |
+| `counter_name` | string | `"pets_thrown"` | 投掷次数写入的计数器/变量名，可在 `log` 节点用 `${pets_thrown}` 引用 |
+
+**转视角搜索**（通过 Interception 发送**单事件相对位移**，即 mouse-look）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `pan_dx` | int | `60` | 每次扫视的位移量，越小转得越细 |
+| `pan_dy` | int | `0` | 每次扫视的垂直位移量，一般保持 `0` 做纯水平扫视 |
+| `pan_interval_ms` | int | `250` | 两次扫视之间的停顿 —— **"慢速"由此实现**，越大扫得越慢 |
+| `sweep_limit_px` | int | `0` | `0` = 一直朝同一方向转，360° 自己转回来；`>0` = 单向累计这么多位移后反向（旧行为，搜索范围受限） |
+| `vertical_step_px` | int | `0` | 仅在 `sweep_limit_px > 0` 时生效：每次反向时抬升/压低视角，形成"弓"字形搜索 |
+
+**终止条件与跳转**
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `max_catches` | int | `0` | 投掷多少次后结束，`0` = 无限循环（靠 Ctrl+C 停止）→ `next` |
+| `duration_sec` | float | `0` | 最长运行秒数，`0` = 不限时 → `on_timeout` |
+| `scene_target` | string | — | 可选场景守卫：该视觉目标消失即退出 → `on_absent` |
+| `scene_min_score` | float | `0.8` | 场景守卫的最低置信度 |
+| `next` | string | — | 达到 `max_catches` 后的下一步 |
+| `on_timeout` | string | `next` | 达到 `duration_sec` 后的下一步 |
+| `on_absent` | string | `next` | 场景守卫目标消失后的下一步 |
+| `on_error` | string | — | 动作执行器不可用时的下一步 |
+
+**安全行为：**
+
+- 截不到游戏画面时（窗口未找到 / 不在前台，见 `RuntimeContext.frame_captured`），
+  节点**不会转视角、也不会按左键**，只每 5 秒告警一次。否则"看不到"会被误判成
+  "画面里没有精灵"，导致脚本一直甩动你正在使用的真实鼠标、把左键点到别的窗口上。
+- 键鼠动作失败（驱动抽风、拿不到截帧区域等）时不会立刻重试，而是退避
+  `_FAIL_BACKOFF_SEC`（0.5s）。直接回扫描的话，下一帧又会选中同一个目标、又失败，
+  持续性故障下就是以满帧率空转刷日志。
+
+**示例**（完整可运行版本见 `config/workflows/catch_pet.yaml`）：
+
+```yaml
+variables:
+  target_pet: "sansan"
+
+steps:
+  step_hunt:
+    type: pet_hunt
+    target: "${target_pet}"
+    min_score: 0.5
+    confirm_frames: 2
+    throw_hold_ms: 300         # 长按蓄力 0.3 秒丢球
+    catch_cooldown_ms: 2000
+    restore_aim_after_throw: true   # 冷却结束把瞄准位移反向补回，恢复视角轴线
+    aim_gain_x: -1.15          # 实测比率：只用于首步逼近，之后自动在线标定
+    aim_gain_y: -0.22
+    aim_step_px: 40            # 后续每步限幅
+    aim_tolerance_px: 6        # 收敛阈值
+    pan_dx: 60                 # 每次扫视转 60（单事件）
+    pan_interval_ms: 250       # 每 250ms 扫一次 → 慢速扫视
+    sweep_limit_px: 0          # 0 = 一直朝同一方向转，360° 自己转回来
+    max_catches: 0             # 无限循环
+    next: "step_summary"
+
+  step_summary:
+    type: log
+    message: "捕猎结束，共投掷 ${pets_thrown} 次精灵球"
+    next: "step_end"
+
+  step_end:
+    type: terminate
+```
+
+**前置条件：** `submodules/RocoKingdom-Spotting/models/best.pt` 必须存在
+（`models/` 被子模块 gitignore，重新训练后需手动同步），且模型类别名要包含 `target` 的值。
+
+---
+
 ## 4. 条件类型参考
 
 条件用于 `condition` 节点的 `conditions` 列表和 `loop` 节点的 `exit_condition`。
@@ -415,6 +594,33 @@ step_debug:
   scene: "battle_field"
 ```
 
+### 4.7 protocol — 协议条件（RKPP 信息源）
+
+判断某个战斗协议事件是否已发生。依赖 RKPP 协议信息源（见 `config/global.yaml` 的 `protocol` 段），
+事件匹配顺序：先精确匹配 `summary_kind` / `opcode_name` / `opencode`，再对 `meaning` 做包含匹配（忽略大小写）。
+协议源不可用时条件始终为 `false`，建议与视觉条件用 `OR` 组合做回退。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | 固定为 `"protocol"` |
+| `event` | string | 事件标识（`summary_kind` / `opcode_name` / `opencode` 精确，或 `meaning` 包含） |
+| `within_sec` | float | 可选：事件须在最近 N 秒内收到 |
+| `field` | string | 可选：点分路径提取事件字段，如 `content.damage` |
+| `operator` | string | 与 `field` 搭配的比较运算符（默认 `==`） |
+| `value` | any | 与 `field` 搭配的期望值（支持 `${var}` 变量引用） |
+
+```yaml
+- type: protocol
+  event: "battle_end"          # 战斗结束事件已发生（30 秒内）
+  within_sec: 30
+
+- type: protocol
+  event: "action_resolve"      # 行动结算伤害 >= 200
+  field: "content.damage"
+  operator: ">="
+  value: 200
+```
+
 ### 支持的运算符
 
 所有使用 `operator` 字段的条件支持以下比较运算符：
@@ -475,6 +681,24 @@ scenes:
   retry: 3                        # 失败重试次数（默认 0）
   retry_delay_ms: 500             # 重试间隔（默认 500ms）
 ```
+
+### move_to_target — PathPlanner 拟人移动到视觉目标
+
+使用路径规划器生成拟人化鼠标路径，将鼠标从当前位置自然移动到目标。
+
+```yaml
+- move_to_target: "target_name"   # 目标名称（必填）
+  min_score: 0.75                 # 最低置信度（默认 0.0）
+  fallback_pos: [500, 300]        # 目标未找到时的备选坐标
+  duration_ms: 300                # 移动总耗时（默认 300ms）
+  strategy: "fitts"               # 路径策略："fitts"（拟人化）/ "sine"（正弦弧线）
+  offset_x: 0                     # X 偏移
+  offset_y: 0                     # Y 偏移
+```
+
+**策略说明：**
+- `fitts`：模拟真实人类鼠标行为（加减速 + 过冲 + 微抖动 + 弧线偏移）
+- `sine`：正弦垂直扰动（平滑弧线，适合简单场景）
 
 ### click — 坐标点击
 

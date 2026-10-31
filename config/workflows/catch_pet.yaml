@@ -1,0 +1,156 @@
+# 自动捕捉精灵工作流
+# 逻辑闭环：YOLO 识别目标精灵 → 转视角把它移到画面中心 → 长按左键蓄力丢球
+#          → 冷却时把瞄准位移反向补回（光标回原位、相机回原轴线）
+#          → 一直朝同一方向慢速转视角找下一只（360° 自己转回来）→ 循环
+#
+# 运行（默认抓 pipaniao）：
+#   python main.py -w config/workflows/catch_pet.yaml -c config/global_hunt.yaml -v
+#   换目标精灵不必改本文件：
+#   python main.py -w config/workflows/catch_pet.yaml -c config/global_hunt.yaml --var target_pet=sansan -v
+#
+# 前置条件：
+#   1. 模型文件已就位：submodules/RocoKingdom-Spotting/models/best.pt
+#      （models/ 被子模块 gitignore，重新训练后需手动同步）
+#      target_pet 按**类别名**匹配，所以模型里必须有这个名字的类别。
+#      换模型后先跑 python tools\verify_model.py --target pipaniao 确认类别名对得上
+#      （曾经踩过：data.yaml 插入新类别后标注未重编号，导致目标类零训练样本、
+#        模型永远不输出那个名字，日志上只表现为"一直没发现目标"）
+#   2. 游戏窗口在前台，且标题包含 config/global.yaml 里 spotting.window_keyword 的关键词
+#   3. 已安装 Interception 驱动（未安装会回退到 SendInput 用户模式，相对位移转视角精度略低）
+#   4. Ctrl+C 可随时安全停止（切到终端的瞬间游戏失去前台，脚本会自动停手）
+
+name: "自动捕捉精灵"
+version: "1.0"
+description: "视觉识别目标精灵，转视角把它移到画面中心后长按丢球，随后慢速转动视角搜索下一只，循环直到达到次数上限或手动停止"
+
+# ─── 全局变量 ───────────────────────────────────────────────
+variables:
+  # 识别
+  target_pet: "pipaniao"         # 要抓的 YOLO 类别名，按**名字**匹配（不是索引，重训换序也不受影响）
+                                 # 临时换目标不用改这里：--var target_pet=sansan
+  pet_min_score: 0.5             # 最低置信度（子模块 config.json 的 conf=0.4 是硬下限）
+  confirm_frames: 1              # 连续命中几帧才开火。1 = 识别到当帧就丢球，不等第二帧
+                                 # 代价：单帧误检会白丢一个球。若发现空丢，改回 2 并/或提高 pet_min_score
+  target_select: "reference"     # 多目标时怎么选：reference = 离准星最近（转视角代价最小，默认）
+                                 # score = 置信度最高；largest = 检测框最大（近似离角色最近）
+
+  # 瞄准
+  # relative = 移动视角把精灵转到画面中心，然后长按蓄力丢球（对齐 RocoPilot 的做法）
+  # planned / direct = 绝对定位到检测框中心（备选，本游戏不适用）
+  aim_strategy: "relative"
+  path_strategy: "fitts"         # 仅 planned 生效
+
+  # 以下参数仅 aim_strategy: "relative" 时生效
+  aim_reference: "center"        # 瞄准基准点：center = 客户区中心
+  aim_reference_offset_x: 0      # 基准点微调：实测落点偏左就把 x 调正，偏上就把 y 调正
+  aim_reference_offset_y: 0
+  # 转视角比率 = 画面内容位移 ÷ 鼠标位移，**带符号、按轴分开**。
+  # 实测（2026-10-05，1920x1080，tools/calibrate_aim.py）：
+  #   垂直 -0.22 / -0.22 / -0.20 / -0.19 —— 四次独立测量一致，可信
+  #   水平 -1.13 / -1.20（单事件，delta 100 与 25，线性）
+  # 换分辨率或改游戏内鼠标灵敏度后必须重测。
+  # 水平轴只能用 --use-detector 模式测：偏航是透视旋转而非平移，
+  # 区域对齐法会给出虚假的对角位移（实测报出过 (+199,-273) 这种荒谬值）。
+  aim_gain_x: -1.15
+  aim_gain_y: -0.21
+  aim_max_move_px: 3000          # 位移上限，只在比率配错时兜底
+  aim_settle_ms: 0               # 位移后等相机到位再丢球。0 = 转完视角当帧就丢，不等待
+                                 # ⚠ 若发现球总是丢在"转过去之前的方向"（落点偏向目标来路），
+                                 #   说明相机平滑插值还没走完就松手了 —— 参考实现 RocoPilot
+                                 #   在这里固定 sleep 0.12s。那时改回 80~120 即可
+  # 拟人轨迹：PathPlanner 把位移拆成带加减速/弧线/过冲的多步。
+  # **实测不建议开**：同样 delta=100，拟人 20 步只走出单事件 83% 的效果
+  # （比率 -0.94 vs -1.13），而且非线性 —— delta=25 时比率掉到 -0.56
+  # （单事件在 25 和 100 上是 -1.20 / -1.13，线性良好）。
+  # 原因是每步约 1px 时被游戏吃掉一部分；比率随距离变化就没法一次瞄准到位。
+  # 若确实要开，必须用 --use-detector 重新标定，并接受远距离/近距离精度不一致。
+  aim_path_planner: false
+  aim_path_steps: 20             # 轨迹分段数，越多越平滑
+
+  # 三种模式通用
+  aim_duration_ms: 350           # relative+拟人轨迹时是走完整条轨迹的耗时；planned/direct 是移动耗时
+  aim_offset_x: 0                # 目标点偏移（正值向右）
+  aim_offset_y: 0                # 目标点偏移（正值向下；球总丢到头顶可设为正数瞄身体下方）
+
+  # 丢球
+  throw_hold_ms: 300             # 长按左键蓄力时长（参考实现用 200~400ms；1200ms 会过充）
+  catch_cooldown_ms: 2000        # 丢球后冷却，等捕捉动画播完
+  # 冷却结束时把瞄准时发出的相对位移反向补回：光标回到原位、相机回到原轴线。
+  # 不补的话每抓一只相机就多偏一点，水平扫视沿的线越来越斜（"丢了原本的轴线"），
+  # 光标也会越飘越偏。补回用单事件相对位移，与瞄准发法完全一致，净位移抵消。
+  restore_aim_after_throw: true
+
+  # 转视角搜索
+  pan_dx: 60                     # 每次扫视的单事件位移量（越小转得越细）
+  pan_dy: 0                      # 每次扫视的垂直位移量（一般保持 0，纯水平扫视）
+  pan_interval_ms: 250           # 两次扫视之间的停顿 —— 这才是"慢速"的实现方式
+                                 # （位移一律单事件发送，拆成微步会让实际幅度对不上标定值）
+  sweep_limit_px: 0              # 0 = 一直朝同一方向转，转满 360° 自然回到原处
+                                 # 设成 >0 则单向累计这么多位移后反向（旧行为，范围有限）
+  vertical_step_px: 0            # 仅在 sweep_limit_px > 0 时生效：每次反向时抬升/压低视角
+
+  # 终止条件
+  max_catches: 0                 # 投掷多少次后结束（0 = 无限循环，靠 Ctrl+C 停止）
+  hunt_duration_sec: 0           # 最长运行秒数（0 = 不限时）
+
+# ─── 起始步骤 ───────────────────────────────────────────────
+start: "step_hunt"
+
+# ─── 工作流步骤 ─────────────────────────────────────────────
+steps:
+
+  # ═══ 捕猎主循环（节点内部自维持状态机，无需在 YAML 里画循环） ═══
+  step_hunt:
+    type: pet_hunt
+    target: "${target_pet}"
+    min_score: "${pet_min_score}"
+    confirm_frames: "${confirm_frames}"
+    target_select: "${target_select}"
+
+    aim_strategy: "${aim_strategy}"
+    aim_reference: "${aim_reference}"
+    aim_reference_offset_x: "${aim_reference_offset_x}"
+    aim_reference_offset_y: "${aim_reference_offset_y}"
+    aim_gain_x: "${aim_gain_x}"
+    aim_gain_y: "${aim_gain_y}"
+    aim_max_move_px: "${aim_max_move_px}"
+    aim_path_planner: "${aim_path_planner}"
+    aim_path_steps: "${aim_path_steps}"
+    path_strategy: "${path_strategy}"
+    aim_duration_ms: "${aim_duration_ms}"
+    aim_settle_ms: "${aim_settle_ms}"
+    aim_offset_x: "${aim_offset_x}"
+    aim_offset_y: "${aim_offset_y}"
+
+    throw_hold_ms: "${throw_hold_ms}"
+    catch_cooldown_ms: "${catch_cooldown_ms}"
+    restore_aim_after_throw: "${restore_aim_after_throw}"
+    counter_name: "pets_thrown"
+
+    pan_dx: "${pan_dx}"
+    pan_dy: "${pan_dy}"
+    pan_interval_ms: "${pan_interval_ms}"
+    sweep_limit_px: "${sweep_limit_px}"
+    vertical_step_px: "${vertical_step_px}"
+
+    max_catches: "${max_catches}"
+    duration_sec: "${hunt_duration_sec}"
+
+    # scene_target: "wild_scene_label"   # 可选：场景标识消失就退出捕猎
+    # scene_min_score: 0.8
+    # on_absent: "step_scene_lost"
+
+    on_timeout: "step_summary"     # 达到 hunt_duration_sec
+    next: "step_summary"           # 达到 max_catches
+    on_error: "step_summary"
+
+  # ═══ 结果汇总 ═══
+  step_summary:
+    type: log
+    message: "捕猎结束，共投掷 ${pets_thrown} 次精灵球"
+    level: info
+    next: "step_end"
+
+  step_end:
+    type: terminate
+    message: "自动捕捉流程完成"

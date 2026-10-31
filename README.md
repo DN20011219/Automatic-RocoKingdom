@@ -53,7 +53,20 @@ pip install -r requirements.txt
 
 安装后需要**重启电脑**。
 
-### 4. 配置全局参数
+### 4. 放置 YOLO 模型（仅视觉识别精灵时需要）
+
+`submodules/RocoKingdom-Spotting/config.json` 里的 `yolo_pets` 检测器读取
+`models/best.pt`，但 `models/` 被子模块 gitignore（模型文件不入库），
+所以克隆后需要自己把训练好的模型放进去：
+
+```bash
+mkdir -p submodules/RocoKingdom-Spotting/models
+cp /path/to/your/best.pt submodules/RocoKingdom-Spotting/models/best.pt
+```
+
+重新训练模型后同样需要手动同步。YOLO 检测器还依赖 `ultralytics`（见 `requirements.txt` 中的可选项）。
+
+### 5. 配置全局参数
 
 编辑 `config/global.yaml`，至少修改窗口关键词为你的目标窗口标题：
 
@@ -62,11 +75,19 @@ spotting:
   window_keyword: "洛克王国：世界"   # 修改为你的目标窗口标题关键词
 ```
 
-### 5. 运行
+### 6. 运行
 
 ```bash
 # 基本用法
 python main.py --workflow config/workflows/example_daily.yaml
+
+# 自动捕捉精灵（识别 → 转视角到画面中心 → 长按丢球 → 补回视角轴线 → 单一方向扫视找下一只）
+# 默认抓 pipaniao；注意要带 -c config/global_hunt.yaml：它关掉了捕猎用不到的模板
+# 检测器，单帧耗时从 294.6ms 降到 55.2ms（3.4fps → 18.1fps），坐标才不会严重滞后
+python main.py -w config/workflows/catch_pet.yaml -c config/global_hunt.yaml -v
+
+# 换要抓的精灵，不必改 YAML（--var 可重复，值会自动推断类型）
+python main.py -w config/workflows/catch_pet.yaml -c config/global_hunt.yaml --var target_pet=sansan --var max_catches=3 -v
 
 # 启用详细日志
 python main.py --workflow config/workflows/example_daily.yaml -v
@@ -77,6 +98,18 @@ python main.py -w config/workflows/example_battle.yaml -c config/global.yaml --l
 
 运行后按 `Ctrl+C` 可安全停止。
 
+> 游戏窗口必须在前台才截得到图（`foreground_only: true`）。切到终端的那一刻
+> 脚本会自动停手（不转视角、不丢球），所以 Alt+Tab 过去按 `Ctrl+C` 是安全的。
+
+开启 `spotting.show_overlay` 后，游戏画面上会叠加检测框（绿色=正常，黄色=低分或光标标记），
+覆盖层是透明置顶 + 鼠标穿透 + 不抢前台的，不影响截图也不影响操作。
+
+### 7. 运行测试
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ---
 
 ## 项目结构
@@ -86,9 +119,11 @@ Automatic-RocoKingdom/
 ├── main.py                      # 框架入口（CLI）
 ├── config/
 │   ├── global.yaml              # 全局配置（窗口、日志、性能参数）
+│   ├── global_hunt.yaml         # 捕猎专用配置（继承 global.yaml，关掉模板检测器提速 5 倍）
 │   └── workflows/               # 工作流 YAML 脚本目录
 │       ├── example_daily.yaml   # 示例：每日任务自动化
-│       └── example_battle.yaml  # 示例：PVP 对战自动化
+│       ├── example_battle.yaml  # 示例：PVP 对战自动化
+│       └── catch_pet.yaml       # 自动捕捉精灵（识别→转视角到中心→丢球→补回轴线→单向360°扫视，默认抓 pipaniao）
 │
 ├── core/                        # 核心引擎
 │   ├── engine.py                # 主引擎：PDA 循环调度
@@ -109,7 +144,8 @@ Automatic-RocoKingdom/
 │       ├── wait_node.py         # 等待节点
 │       ├── scene_node.py        # 场景切换节点
 │       ├── terminate_node.py    # 终止节点
-│       └── log_node.py          # 日志节点
+│       ├── log_node.py          # 日志节点
+│       └── pet_hunt_node.py     # 捕猎节点（识别→瞄准→丢球→转视角闭环）
 │
 ├── perception/                  # 感知层（适配 Spotting）
 │   ├── adapter.py               # Spotting 子模块适配器
@@ -147,6 +183,17 @@ Automatic-RocoKingdom/
 │   ├── ARCHITECTURE.md          # 架构设计详解
 │   ├── WORKFLOW_DSL.md          # 工作流 DSL 完整参考
 │   └── EXTENSION_GUIDE.md       # 扩展开发指南
+│
+├── tests/                       # 单元测试（python -m unittest discover -s tests）
+│   └── test_pet_hunt.py         # 捕猎节点状态机 + 相对位移/长按原语
+│
+├── tools/                       # 调试与标定工具
+│   ├── calibrate_aim.py         # 实测「鼠标位移 → 画面移动」的比率/方向/线性度
+│   │                            #   --time-series 区分相机自动回正与低增益
+│   │                            #   --during-hold 测蓄力期间能否转视角
+│   │                            #   --use-detector 用检测框中心测（需画面里有精灵）
+│   ├── verify_model.py          # 校验模型类别名与标注/目录/data.yaml 是否对得上
+│   └── relabel_dataset.py       # 修复插入新类别后标注 id 未重编号（默认 dry-run）
 │
 ├── requirements.txt
 └── .gitmodules

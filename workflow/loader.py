@@ -32,7 +32,7 @@ class WorkflowLoader:
     REQUIRED_FIELDS = ["name", "steps"]
     VALID_NODE_TYPES = [
         "action", "perceive", "condition", "loop",
-        "wait", "scene", "terminate", "log",
+        "wait", "scene", "terminate", "log", "pet_hunt",
     ]
 
     def load(self, path: Path) -> Dict[str, Any]:
